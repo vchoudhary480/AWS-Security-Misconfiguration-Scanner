@@ -1,139 +1,153 @@
-# AWS Cloud Security Hardening
+# AWS Security Misconfiguration Scanner
 
-Hardened a fresh AWS account against common misconfigurations and built Python scripts to detect them automatically. Built this to learn Boto3 and the underlying AWS API shapes while preparing for SOC analyst and cloud security roles.
+A Python security auditing tool for identifying common misconfigurations across AWS IAM, S3, and EC2 security groups.
 
-## What this project does
+The scanner combines three audit modules into a single workflow, assigns severity ratings, and generates a JSON report with findings and remediation recommendations. Security group checks run across enabled AWS regions.
 
-I configured a real AWS account with proper IAM, S3, CloudTrail, and AWS Config settings, then wrote audit scripts that scan the account and flag anything misconfigured. The scripts produce a JSON report you can pipe into a SIEM or use as a CI/CD exit code gate.
+## Capabilities
 
-The security group auditor scans every enabled AWS region, not just the default one. Real attackers spin up resources in obscure regions specifically because nobody looks there.
+| Area | Implemented checks |
+| --- | --- |
+| IAM | Users without configured MFA devices, access keys older than 90 days, and console passwords last used more than 90 days ago |
+| S3 | Missing Block Public Access settings, missing default encryption configuration, disabled versioning, disabled access logging, and allow statements with wildcard principals |
+| EC2 security groups | Inbound rules allowing `0.0.0.0/0` or `::/0`, including SSH, RDP, database ports, large port ranges, and all-traffic rules |
+| Reporting | Consolidated JSON findings, severity counts, resource identifiers, and remediation recommendations |
+| Validation | Automated tests and a GitHub Actions workflow for linting, syntax checks, and testing |
 
-I also ran controlled detection tests to verify the scripts actually catch what they claim to catch, including edge cases like large CIDR blocks and wildcard S3 policies hidden behind condition blocks.
+The scanner reads AWS configuration through Boto3. It does not automatically modify resources or remediate findings.
 
-## Project layout
+## Project Structure
 
-```
-scripts/iam_audit.py              # missing MFA, stale access keys, inactive consoles
-scripts/s3_audit.py               # public access, encryption, versioning, wildcard policies
-scripts/security_groups_audit.py  # SSH/RDP/database ports open to the internet, all regions
-scripts/full_audit.py             # runs all three, outputs JSON report
-tests/                            # moto-based unit tests for all audit modules
-CIS_MAPPING.md                    # maps each check to a CIS AWS Foundations Benchmark v1.4 control
-```
+| Path | Purpose |
+| --- | --- |
+| [scripts/iam_audit.py](scripts/iam_audit.py) | IAM user and credential checks |
+| [scripts/s3_audit.py](scripts/s3_audit.py) | S3 bucket configuration and policy checks |
+| [scripts/security_groups_audit.py](scripts/security_groups_audit.py) | Security group rule analysis across enabled regions |
+| [scripts/full_audit.py](scripts/full_audit.py) | Audit orchestration, console summary, and JSON export |
+| [tests/](tests/) | Unit tests and an orchestrator integration test |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | Continuous integration workflow |
+| [docs/sample_audit_report.json](docs/sample_audit_report.json) | Example report structure |
+| [CIS_MAPPING.md](CIS_MAPPING.md) | Project benchmark mapping notes |
 
-## How to run it
+## Getting Started
+
+### Prerequisites
+
+- Python 3.12, matching the version used in CI.
+- AWS credentials available through the standard Boto3 credential provider chain, such as an authenticated AWS profile.
+- Permission to read the IAM, S3, and EC2 configuration being audited.
+
+The audit uses IAM user, MFA, and access-key read operations; S3 bucket listing and configuration reads; and EC2 region and security group discovery. Use a scoped read-only identity appropriate to the target account. No credentials belong in the repository.
+
+### Installation
+
+Clone the repository and install the dependencies in a virtual environment.
 
 ```bash
-pip install -r requirements.txt
-cd scripts
-python full_audit.py
+git clone https://github.com/vchoudhary480/AWS-Security-Misconfiguration-Scanner.git
+cd AWS-Security-Misconfiguration-Scanner
+python -m venv .venv
 ```
 
-Output:
-- Console summary with severity counts
-- `docs/audit_report_YYYYMMDD_HHMMSS.json` for SIEM ingestion
-- Exit code 0 (clean) or 1 (findings detected) for CI/CD pipelines
+Activate the environment on Windows PowerShell:
 
-## What it detects
-
-**IAM**
-- Users without MFA
-- Access keys older than 90 days
-- Console passwords unused for 90+ days
-
-**S3**
-- Missing block public access flags
-- No default encryption
-- Versioning disabled
-- Access logging off
-- Bucket policies with wildcard principals
-
-**Security Groups (all regions)**
-- SSH and RDP open to the internet
-- Database ports exposed publicly (MySQL, PostgreSQL, Redis, MongoDB, and others)
-- Overly large port ranges
-- All-traffic rules
-
-## Detection self-test
-
-To verify the scripts catch what they claim, I created intentionally misconfigured resources and confirmed detection. I also tested adversarial edge cases that naive checks miss:
-
-- A /8 CIDR block (not literally 0.0.0.0/0 but effectively public)
-- An S3 policy granting wildcard access via a Condition block
-- An IAM user with iam:PassRole to a privileged role
-
-All findings were detected at the correct severity. Clean resources produced no false positives.
-
-## Architecture
-
-```mermaid
-flowchart TB
-    subgraph AWS["AWS Account"]
-        IAM[IAM Users<br/>MFA + Least Privilege]
-        S3[S3 Buckets<br/>Encrypted + Versioned]
-        SG[EC2 Security Groups<br/>Multi-Region]
-
-        CT[CloudTrail<br/>Multi-region audit log]
-        CONFIG[AWS Config<br/>Configuration history]
-        LOGS[(S3 Logs Bucket<br/>Encrypted)]
-
-        IAM --> CT
-        S3 --> CT
-        SG --> CT
-        IAM --> CONFIG
-        S3 --> CONFIG
-        SG --> CONFIG
-        CT --> LOGS
-        CONFIG --> LOGS
-    end
-
-    BOTO[Boto3 Audit Scripts<br/>Python + AWS SDK]
-    REPORT[JSON Audit Report]
-
-    BOTO -.queries.-> IAM
-    BOTO -.queries.-> S3
-    BOTO -.queries.-> SG
-    BOTO --> REPORT
-
-    style IAM fill:#ff9900,stroke:#333,color:#000
-    style S3 fill:#569A31,stroke:#333,color:#fff
-    style SG fill:#ff9900,stroke:#333,color:#000
-    style CT fill:#1f7be7,stroke:#333,color:#fff
-    style CONFIG fill:#1f7be7,stroke:#333,color:#fff
-    style LOGS fill:#232f3e,stroke:#333,color:#fff
-    style BOTO fill:#3776ab,stroke:#333,color:#fff
-    style REPORT fill:#666,stroke:#333,color:#fff
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
-## Security decisions
+On macOS or Linux:
 
-- **AdministratorAccess on the admin group** — fine for a lab. Production would use scoped policies.
-- **GuardDuty and Security Hub not enabled** — both have free trials, but I scoped this project to CloudTrail, AWS Config, and custom Python detections to stay within the always-free tier.
-- **S3 access logging not enabled on all buckets** — left as a known finding to show how the script surfaces real gaps.
+```bash
+source .venv/bin/activate
+```
 
-## Relationship to existing tools
+Install the project dependencies:
 
-Prowler, ScoutSuite, and CloudSploit already do this at production scale. The point of this project was to learn Boto3, the AWS auth flow, and the underlying API shapes by rebuilding a slice of what Prowler does from scratch. In a real environment I would run Prowler alongside custom detections for organization-specific controls.
+```bash
+python -m pip install -r requirements.txt
+```
 
-## CIS benchmark mapping
+### Run the Full Audit
 
-See [CIS_MAPPING.md](CIS_MAPPING.md) for the full table mapping each check to a CIS AWS Foundations Benchmark v1.4 control number.
+From the repository root, using your configured AWS identity:
 
-## Sample output
+```bash
+python scripts/full_audit.py
+```
 
-Vulnerable security group detection:
+The audit prints findings and a summary to the console, then writes a timestamped report to:
 
-![Vulnerable SG detection](screenshots/01_vulnerable_sg_findings.png)
+```text
+docs/audit_report_YYYYMMDD_HHMMSS.json
+```
 
-Full audit summary:
+Individual modules can also run independently:
 
-![Full audit summary](screenshots/02_full_audit_summary.png)
+```bash
+python scripts/iam_audit.py
+python scripts/s3_audit.py
+python scripts/security_groups_audit.py
+```
 
-JSON report:
+## Reporting & Exit Codes
 
-![JSON report](screenshots/03_audit_report_json.png)
+Each finding includes a severity, category, affected resource, issue description, and remediation recommendation. The combined report includes a timestamp, total finding count, and severity breakdown.
 
-## Author
+| Exit code | Meaning |
+| --- | --- |
+| `0` | The full audit completed without recorded findings |
+| `1` | Findings were recorded, or an unhandled failure occurred |
 
-Vishwa Prakash Choudhary |
-Computer Science, UC Davis
+The full audit uses exit code `1` when findings exist. Python can also return this code for an unhandled error, so inspect the console output before treating it as a findings-only signal.
+
+Some AWS API errors are printed without becoming findings. An empty report or exit code `0` therefore does not prove that every check completed successfully.
+
+## Testing & Continuous Integration
+
+The repository contains 18 test functions covering IAM checks, S3 checks, security group rule analysis, and combined reporting. AWS-dependent tests use Moto to mock service responses; rule-analysis tests also use direct input dictionaries.
+
+Run the suite from the repository root:
+
+```bash
+python -m pytest tests/ -v --cov=scripts --cov-report=term-missing
+```
+
+The GitHub Actions workflow runs on pushes and pull requests targeting `main`. It installs the pinned dependencies, runs Ruff, checks script syntax, and executes the tests.
+
+```bash
+ruff check scripts/ tests/
+```
+
+Tests validate the covered scenarios. They do not establish complete detection coverage or a zero false-positive rate.
+
+## Sample Output
+
+### Security Group Findings
+
+![Console findings for intentionally misconfigured security groups](screenshots/01_vulnerable_sg_findings.png)
+
+### Full Audit Summary
+
+![Consolidated AWS audit summary with severity counts](screenshots/02_full_audit_summary.png)
+
+### JSON Report
+
+![Example JSON audit report](screenshots/03_audit_report_json.png)
+
+## Scope & Limitations
+
+- **Public CIDRs:** Security group checks recognize `0.0.0.0/0` and `::/0`. Other broad or publicly routable CIDRs are not classified as public by the current implementation.
+- **IAM coverage:** Checks target IAM users and credentials. They do not audit root-account security, effective permissions, or privilege-escalation paths such as `iam:PassRole`.
+- **S3 policy evaluation:** Wildcard-principal allow statements are flagged without a complete evaluation of conditions, explicit denies, or effective access. Review findings in context.
+- **Console inactivity:** The inactivity check relies on an available `PasswordLastUsed` value. Users without that value are not flagged by this check.
+- **Audit completeness:** Coverage depends on API permissions, available responses, and implemented checks. The tool is a focused learning project, not a complete account-security assessment.
+
+## Benchmark Mapping & Lab Context
+
+[CIS_MAPPING.md](CIS_MAPPING.md) records the project's AWS Foundations Benchmark mapping notes, including manual configuration work and out-of-scope controls. Some mappings require review against the implementation. The document does not establish full benchmark coverage or compliance.
+
+The original account-hardening lab also documented CloudTrail and AWS Config setup. The automated scanner described here covers IAM, S3, and EC2 security groups; it does not audit those logging services.
+
+## Intended Use
+
+Use the scanner to learn AWS security APIs, investigate selected configuration risks, and develop custom audit checks. Review findings before applying remediation and use broader assessment tools when comprehensive coverage is required.
